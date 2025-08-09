@@ -129,9 +129,12 @@ describe('useAuth', () => {
     });
 
     it('should set loading state during sign in', async () => {
-      vi.mocked(signInAction).mockImplementation(() => 
-        new Promise(resolve => setTimeout(() => resolve({ success: true }), 100))
-      );
+      let resolveSignIn: (value: any) => void;
+      const signInPromise = new Promise(resolve => {
+        resolveSignIn = resolve;
+      });
+      
+      vi.mocked(signInAction).mockReturnValue(signInPromise);
       vi.mocked(getAnonWorkData).mockReturnValue(null);
       vi.mocked(getProjects).mockResolvedValue([]);
       vi.mocked(createProject).mockResolvedValue({ id: 'project-123' });
@@ -140,11 +143,20 @@ describe('useAuth', () => {
 
       expect(result.current.isLoading).toBe(false);
 
-      await act(async () => {
-        const signInPromise = result.current.signIn('test@example.com', 'password');
-        // Check loading state immediately after calling signIn
+      let authPromise: Promise<any>;
+      act(() => {
+        authPromise = result.current.signIn('test@example.com', 'password');
+      });
+
+      await waitFor(() => {
         expect(result.current.isLoading).toBe(true);
-        await signInPromise;
+      });
+
+      // Resolve the sign in
+      resolveSignIn!({ success: true });
+
+      await act(async () => {
+        await authPromise;
       });
 
       expect(result.current.isLoading).toBe(false);
@@ -218,9 +230,12 @@ describe('useAuth', () => {
     });
 
     it('should set loading state during sign up', async () => {
-      vi.mocked(signUpAction).mockImplementation(() => 
-        new Promise(resolve => setTimeout(() => resolve({ success: true }), 100))
-      );
+      let resolveSignUp: (value: any) => void;
+      const signUpPromise = new Promise(resolve => {
+        resolveSignUp = resolve;
+      });
+      
+      vi.mocked(signUpAction).mockReturnValue(signUpPromise);
       vi.mocked(getAnonWorkData).mockReturnValue(null);
       vi.mocked(getProjects).mockResolvedValue([]);
       vi.mocked(createProject).mockResolvedValue({ id: 'project-456' });
@@ -229,14 +244,238 @@ describe('useAuth', () => {
 
       expect(result.current.isLoading).toBe(false);
 
-      await act(async () => {
-        const signUpPromise = result.current.signUp('new@example.com', 'password');
-        // Check loading state immediately after calling signUp
+      let authPromise: Promise<any>;
+      act(() => {
+        authPromise = result.current.signUp('new@example.com', 'password');
+      });
+
+      await waitFor(() => {
         expect(result.current.isLoading).toBe(true);
-        await signUpPromise;
+      });
+
+      // Resolve the sign up
+      resolveSignUp!({ success: true });
+
+      await act(async () => {
+        await authPromise;
       });
 
       expect(result.current.isLoading).toBe(false);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle error when creating project from anonymous work fails', async () => {
+      const mockAnonWork = {
+        messages: [{ role: 'user', content: 'Test message' }],
+        fileSystemData: { files: {} },
+      };
+
+      vi.mocked(signInAction).mockResolvedValue({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(mockAnonWork);
+      vi.mocked(createProject).mockRejectedValue(new Error('Failed to create project'));
+
+      const { result } = renderHook(() => useAuth());
+
+      await expect(act(async () => {
+        await result.current.signIn('test@example.com', 'password');
+      })).rejects.toThrow('Failed to create project');
+
+      expect(clearAnonWork).not.toHaveBeenCalled();
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('should handle error when creating new project fails', async () => {
+      vi.mocked(signInAction).mockResolvedValue({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(null);
+      vi.mocked(getProjects).mockResolvedValue([]);
+      vi.mocked(createProject).mockRejectedValue(new Error('Database error'));
+
+      const { result } = renderHook(() => useAuth());
+
+      await expect(act(async () => {
+        await result.current.signIn('test@example.com', 'password');
+      })).rejects.toThrow('Database error');
+
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('should handle error when fetching projects fails', async () => {
+      vi.mocked(signInAction).mockResolvedValue({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(null);
+      vi.mocked(getProjects).mockRejectedValue(new Error('Network error'));
+
+      const { result } = renderHook(() => useAuth());
+
+      await expect(act(async () => {
+        await result.current.signIn('test@example.com', 'password');
+      })).rejects.toThrow('Network error');
+
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('should handle anonymous work with empty messages array', async () => {
+      const mockAnonWork = {
+        messages: [],
+        fileSystemData: { files: {} },
+      };
+
+      vi.mocked(signInAction).mockResolvedValue({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(mockAnonWork);
+      vi.mocked(getProjects).mockResolvedValue([{ id: 'existing-project' }]);
+
+      const { result } = renderHook(() => useAuth());
+
+      await act(async () => {
+        await result.current.signIn('test@example.com', 'password');
+      });
+
+      await waitFor(() => {
+        expect(createProject).not.toHaveBeenCalled();
+        expect(clearAnonWork).not.toHaveBeenCalled();
+        expect(mockPush).toHaveBeenCalledWith('/existing-project');
+      });
+    });
+
+    it('should prevent concurrent sign in attempts', async () => {
+      let resolveSignIn: (value: any) => void;
+      const signInPromise = new Promise((resolve) => {
+        resolveSignIn = resolve;
+      });
+
+      vi.mocked(signInAction).mockReturnValue(signInPromise);
+
+      const { result } = renderHook(() => useAuth());
+
+      let firstCallPromise: Promise<any>;
+      let secondCallPromise: Promise<any>;
+
+      act(() => {
+        firstCallPromise = result.current.signIn('test@example.com', 'password');
+        secondCallPromise = result.current.signIn('test2@example.com', 'password2');
+      });
+
+      expect(result.current.isLoading).toBe(true);
+
+      resolveSignIn!({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(null);
+      vi.mocked(getProjects).mockResolvedValue([]);
+      vi.mocked(createProject).mockResolvedValue({ id: 'new-project' });
+
+      await act(async () => {
+        await Promise.all([firstCallPromise!, secondCallPromise!]);
+      });
+
+      expect(vi.mocked(signInAction)).toHaveBeenCalledTimes(2);
+    });
+
+    it('should prevent concurrent sign up attempts', async () => {
+      let resolveSignUp: (value: any) => void;
+      const signUpPromise = new Promise((resolve) => {
+        resolveSignUp = resolve;
+      });
+
+      vi.mocked(signUpAction).mockReturnValue(signUpPromise);
+
+      const { result } = renderHook(() => useAuth());
+
+      let firstCallPromise: Promise<any>;
+      let secondCallPromise: Promise<any>;
+
+      act(() => {
+        firstCallPromise = result.current.signUp('new@example.com', 'password');
+        secondCallPromise = result.current.signUp('new2@example.com', 'password2');
+      });
+
+      expect(result.current.isLoading).toBe(true);
+
+      resolveSignUp!({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(null);
+      vi.mocked(getProjects).mockResolvedValue([]);
+      vi.mocked(createProject).mockResolvedValue({ id: 'new-project' });
+
+      await act(async () => {
+        await Promise.all([firstCallPromise!, secondCallPromise!]);
+      });
+
+      expect(vi.mocked(signUpAction)).toHaveBeenCalledTimes(2);
+    });
+
+    it('should reset loading state even when handlePostSignIn throws', async () => {
+      vi.mocked(signInAction).mockResolvedValue({ success: true });
+      vi.mocked(getAnonWorkData).mockImplementation(() => {
+        throw new Error('Unexpected error');
+      });
+
+      const { result } = renderHook(() => useAuth());
+
+      await expect(act(async () => {
+        await result.current.signIn('test@example.com', 'password');
+      })).rejects.toThrow('Unexpected error');
+
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('should handle project creation with special characters in name', async () => {
+      const mockAnonWork = {
+        messages: [{ role: 'user', content: 'Test' }],
+        fileSystemData: {},
+      };
+      const mockProject = { id: 'special-project' };
+
+      // Mock Date to return a specific time with special characters
+      const originalToLocaleTimeString = Date.prototype.toLocaleTimeString;
+      Date.prototype.toLocaleTimeString = vi.fn(() => '12:34:56 PM');
+
+      vi.mocked(signInAction).mockResolvedValue({ success: true });
+      vi.mocked(getAnonWorkData).mockReturnValue(mockAnonWork);
+      vi.mocked(createProject).mockResolvedValue(mockProject);
+
+      const { result } = renderHook(() => useAuth());
+
+      await act(async () => {
+        await result.current.signIn('test@example.com', 'password');
+      });
+
+      await waitFor(() => {
+        expect(createProject).toHaveBeenCalledWith({
+          name: 'Design from 12:34:56 PM',
+          messages: mockAnonWork.messages,
+          data: mockAnonWork.fileSystemData,
+        });
+      });
+
+      // Restore original function
+      Date.prototype.toLocaleTimeString = originalToLocaleTimeString;
+    });
+
+    it('should handle mixed success/failure in rapid succession', async () => {
+      vi.mocked(signInAction)
+        .mockResolvedValueOnce({ success: false, error: 'First attempt failed' })
+        .mockResolvedValueOnce({ success: true });
+      
+      vi.mocked(getAnonWorkData).mockReturnValue(null);
+      vi.mocked(getProjects).mockResolvedValue([{ id: 'project-1' }]);
+
+      const { result } = renderHook(() => useAuth());
+
+      // First attempt fails
+      await act(async () => {
+        const response = await result.current.signIn('test@example.com', 'wrong');
+        expect(response.success).toBe(false);
+      });
+
+      expect(mockPush).not.toHaveBeenCalled();
+
+      // Second attempt succeeds
+      await act(async () => {
+        const response = await result.current.signIn('test@example.com', 'correct');
+        expect(response.success).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith('/project-1');
+      });
     });
   });
 });
