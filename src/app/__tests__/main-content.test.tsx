@@ -48,7 +48,7 @@ describe('MainContent', () => {
     
     expect(screen.getByText('React Component Generator')).toBeInTheDocument();
     expect(screen.getByText('Chat Interface')).toBeInTheDocument();
-    expect(screen.getByText('Preview')).toBeInTheDocument();
+    expect(screen.getByText('Show Preview')).toBeInTheDocument();
     expect(screen.getByText('Code')).toBeInTheDocument();
   });
 
